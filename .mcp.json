@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "asset-forge": {
+      "type": "streamable-http",
+      "url": "http://localhost:8091/mcp"
+    }
+  }
+}

@@ -29,6 +29,7 @@ htmlcov/
 
 # Generated assets
 assets/generated/
+local_assets/
 
 # OS
 Thumbs.db
