@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  asset-forge-mcp:
+    build: .
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./assets:/app/assets/generated
+    restart: unless-stopped

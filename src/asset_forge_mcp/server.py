@@ -1,0 +1,190 @@
+"""Asset Forge MCP server — entry point and tool registration."""
+
+from __future__ import annotations
+
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from mcp.server.fastmcp import FastMCP
+
+from .config import get_settings
+from .logging_config import setup_logging
+from .models import (
+    AssetError,
+    AssetType,
+    BackgroundType,
+    ImageQuality,
+    ImageSize,
+    StyleHint,
+)
+from .openai_client import OpenAIImageClient
+from .tools import (
+    edit_game_asset as _edit_game_asset,
+    generate_asset_variants as _generate_asset_variants,
+    generate_game_asset as _generate_game_asset,
+    set_client,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(server: FastMCP) -> AsyncIterator[None]:
+    """Initialise resources on startup, clean up on shutdown."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+
+    settings.asset_output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Asset Forge MCP starting")
+    logger.info("  Host: %s:%d", settings.mcp_host, settings.mcp_port)
+    logger.info("  Output dir: %s", settings.asset_output_dir.resolve())
+    logger.info("  Image model: %s", settings.openai_image_model)
+    logger.info("  Base URL: %s", settings.openai_base_url)
+    logger.info("  Docker: %s", "yes" if os.path.exists("/.dockerenv") else "no")
+
+    client = OpenAIImageClient(
+        api_key=settings.openai_api_key.get_secret_value(),
+        base_url=settings.openai_base_url,
+    )
+    set_client(client)
+
+    try:
+        yield
+    finally:
+        await client.close()
+        logger.info("Asset Forge MCP stopped")
+
+
+mcp = FastMCP(
+    "Asset Forge MCP",
+    instructions=(
+        "Game asset generation and editing server. "
+        "Use generate_game_asset for new assets, "
+        "edit_game_asset to modify existing images, "
+        "and generate_asset_variants for multiple variations."
+    ),
+    lifespan=lifespan,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tool registration
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def generate_game_asset(
+    name: str,
+    prompt: str,
+    asset_type: AssetType = AssetType.SPRITE,
+    style: StyleHint = StyleHint.PIXEL_ART,
+    size: ImageSize = ImageSize.S_1024x1024,
+    background: BackgroundType = BackgroundType.TRANSPARENT,
+    quality: ImageQuality = ImageQuality.AUTO,
+    n: int = 1,
+    tags: list[str] | None = None,
+) -> list:
+    """Generate a new game image asset.
+
+    Args:
+        name: Asset name (used as filename).
+        prompt: Description of the game asset to generate.
+        asset_type: Type of game asset (sprite, icon, portrait, background, tile, ui).
+        style: Visual style (pixel-art, painterly, vector, semi-realistic).
+        size: Image dimensions (1024x1024, 1536x1024, 1024x1536, auto).
+        background: Background type (transparent, opaque, auto).
+        quality: Image quality (low, medium, high, auto).
+        n: Number of images to generate (1-8).
+        tags: Optional tags for metadata.
+    """
+    try:
+        return await _generate_game_asset(
+            name=name, prompt=prompt, asset_type=asset_type, style=style,
+            size=size, background=background, quality=quality, n=n, tags=tags,
+        )
+    except AssetError as exc:
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=str(exc.to_dict()))]
+
+
+@mcp.tool()
+async def edit_game_asset(
+    input_path: str,
+    prompt: str,
+    output_name: str | None = None,
+    mask_path: str | None = None,
+    background: BackgroundType = BackgroundType.AUTO,
+    quality: ImageQuality = ImageQuality.AUTO,
+    size: ImageSize = ImageSize.S_1024x1024,
+) -> list:
+    """Edit an existing image asset.
+
+    Args:
+        input_path: Path to the source image (PNG or JPEG).
+        prompt: Description of the edits to make.
+        output_name: Output filename (defaults to input name + _edited).
+        mask_path: Optional path to a mask image (PNG with alpha channel).
+        background: Background type (transparent, opaque, auto).
+        quality: Image quality (low, medium, high, auto).
+        size: Output dimensions (1024x1024, 1536x1024, 1024x1536, auto).
+    """
+    try:
+        return await _edit_game_asset(
+            input_path=input_path, prompt=prompt, output_name=output_name,
+            mask_path=mask_path, background=background, quality=quality, size=size,
+        )
+    except AssetError as exc:
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=str(exc.to_dict()))]
+
+
+@mcp.tool()
+async def generate_asset_variants(
+    name: str,
+    prompt: str,
+    asset_type: AssetType = AssetType.SPRITE,
+    style: StyleHint = StyleHint.PIXEL_ART,
+    size: ImageSize = ImageSize.S_1024x1024,
+    background: BackgroundType = BackgroundType.TRANSPARENT,
+    quality: ImageQuality = ImageQuality.AUTO,
+    variant_count: int = 4,
+    tags: list[str] | None = None,
+) -> list:
+    """Generate multiple variants of a game asset concept.
+
+    Args:
+        name: Base asset name (variants get _1, _2, ... suffixes).
+        prompt: Core concept description for variant generation.
+        asset_type: Type of game asset (sprite, icon, portrait, background, tile, ui).
+        style: Visual style (pixel-art, painterly, vector, semi-realistic).
+        size: Image dimensions (1024x1024, 1536x1024, 1024x1536, auto).
+        background: Background type (transparent, opaque, auto).
+        quality: Image quality (low, medium, high, auto).
+        variant_count: Number of variants to generate (1-8).
+        tags: Optional tags for metadata.
+    """
+    try:
+        return await _generate_asset_variants(
+            name=name, prompt=prompt, asset_type=asset_type, style=style,
+            size=size, background=background, quality=quality,
+            variant_count=variant_count, tags=tags,
+        )
+    except AssetError as exc:
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=str(exc.to_dict()))]
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    settings = get_settings()
+    mcp.run(transport="streamable-http", host=settings.mcp_host, port=settings.mcp_port)
+
+
+if __name__ == "__main__":
+    main()
