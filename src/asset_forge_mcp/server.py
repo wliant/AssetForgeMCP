@@ -93,6 +93,9 @@ async def generate_game_asset(
 ) -> list:
     """Generate a new game image asset.
 
+    Returns a text block with JSON metadata and one base64-encoded PNG image
+    content block per generated image.
+
     Args:
         name: Asset name (used as filename).
         prompt: Description of the game asset to generate.
@@ -126,6 +129,9 @@ async def edit_game_asset(
 ) -> list:
     """Edit an existing image asset.
 
+    Returns a text block with JSON metadata and one base64-encoded PNG image
+    content block with the edited result.
+
     Args:
         input_image: Base64-encoded source image (PNG or JPEG).
         prompt: Description of the edits to make.
@@ -158,6 +164,10 @@ async def generate_asset_variants(
     tags: list[str] | None = None,
 ) -> list:
     """Generate multiple variants of a game asset concept.
+
+    Returns a text block with JSON metadata (including completed/requested
+    variant counts and any warnings) and one base64-encoded PNG image content
+    block per successful variant.
 
     Args:
         name: Base asset name (variants get _1, _2, ... suffixes).
