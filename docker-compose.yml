@@ -3,11 +3,11 @@ services:
   asset-forge-mcp:
     build: .
     ports:
-      - "8091:8091"
+      - "9500:9500"
     env_file:
       - .env
     environment:
-      - MCP_PORT=8091
+      - MCP_PORT=9500
     volumes:
       - asset-data:/app/assets/generated
     restart: unless-stopped

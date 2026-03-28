@@ -10,6 +10,6 @@ RUN pip install --no-cache-dir -e .
 
 RUN mkdir -p /app/assets/generated
 
-EXPOSE 8091
+EXPOSE 9500
 
 ENTRYPOINT ["python", "-m", "asset_forge_mcp.server"]
