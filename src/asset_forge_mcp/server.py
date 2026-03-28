@@ -116,10 +116,10 @@ async def generate_game_asset(
 
 @mcp.tool()
 async def edit_game_asset(
-    input_path: str,
+    input_image: str,
     prompt: str,
     output_name: str | None = None,
-    mask_path: str | None = None,
+    mask_image: str | None = None,
     background: BackgroundType = BackgroundType.AUTO,
     quality: ImageQuality = ImageQuality.AUTO,
     size: ImageSize = ImageSize.S_1024x1024,
@@ -127,18 +127,18 @@ async def edit_game_asset(
     """Edit an existing image asset.
 
     Args:
-        input_path: Path to the source image (PNG or JPEG).
+        input_image: Base64-encoded source image (PNG or JPEG).
         prompt: Description of the edits to make.
-        output_name: Output filename (defaults to input name + _edited).
-        mask_path: Optional path to a mask image (PNG with alpha channel).
+        output_name: Output filename for internal storage.
+        mask_image: Optional base64-encoded mask image (PNG with alpha channel).
         background: Background type (transparent, opaque, auto).
         quality: Image quality (low, medium, high, auto).
         size: Output dimensions (1024x1024, 1536x1024, 1024x1536, auto).
     """
     try:
         return await _edit_game_asset(
-            input_path=input_path, prompt=prompt, output_name=output_name,
-            mask_path=mask_path, background=background, quality=quality, size=size,
+            input_image=input_image, prompt=prompt, output_name=output_name,
+            mask_image=mask_image, background=background, quality=quality, size=size,
         )
     except AssetError as exc:
         from mcp.types import TextContent

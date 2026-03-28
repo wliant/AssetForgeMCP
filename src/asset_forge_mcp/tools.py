@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,15 +16,13 @@ from mcp.types import ImageContent, TextContent
 from .config import get_settings
 from .files import (
     get_output_dir,
-    read_image_bytes,
     resolve_filepath,
     save_asset,
     save_metadata,
-    validate_input_image,
-    validate_mask,
+    validate_image_bytes,
+    validate_mask_bytes,
 )
 from .models import (
-    ASSET_TYPE_FOLDERS,
     AssetError,
     AssetMetadata,
     AssetType,
@@ -114,7 +111,6 @@ async def generate_game_asset(
     elapsed = time.monotonic() - start
     logger.info("generate_game_asset '%s': %d image(s) in %.1fs", name, len(b64_images), elapsed)
 
-    files_info: list[dict[str, str]] = []
     image_blocks: list[ImageContent] = []
 
     for idx, b64 in enumerate(b64_images):
@@ -136,12 +132,7 @@ async def generate_game_asset(
             created_at=datetime.now(timezone.utc),
             tags=tags,
         )
-        meta_path = save_metadata(meta, filepath)
-
-        files_info.append({
-            "image_path": str(filepath),
-            "metadata_path": str(meta_path),
-        })
+        save_metadata(meta, filepath)
         image_blocks.append(ImageContent(type="image", data=b64, mimeType="image/png"))
 
     text_payload = json.dumps({
@@ -149,7 +140,6 @@ async def generate_game_asset(
         "tool": "generate_game_asset",
         "name": name,
         "asset_type": asset_type.value,
-        "files": files_info,
     })
 
     content: list[TextContent | ImageContent] = [TextContent(type="text", text=text_payload)]
@@ -167,10 +157,10 @@ async def generate_game_asset(
 # ---------------------------------------------------------------------------
 
 async def edit_game_asset(
-    input_path: str,
+    input_image: str,
     prompt: str,
     output_name: str | None = None,
-    mask_path: str | None = None,
+    mask_image: str | None = None,
     background: BackgroundType = BackgroundType.AUTO,
     quality: ImageQuality = ImageQuality.AUTO,
     size: ImageSize = ImageSize.S_1024x1024,
@@ -179,16 +169,14 @@ async def edit_game_asset(
     settings = get_settings()
     client = get_client()
 
-    src = Path(input_path)
-    src_w, src_h = validate_input_image(src)
+    image_bytes = base64.b64decode(input_image)
+    src_w, src_h = validate_image_bytes(image_bytes)
 
     mask_bytes: bytes | None = None
-    if mask_path is not None:
-        mp = Path(mask_path)
-        validate_mask(mp, src_w, src_h)
-        mask_bytes = read_image_bytes(mp)
+    if mask_image is not None:
+        mask_bytes = base64.b64decode(mask_image)
+        validate_mask_bytes(mask_bytes, src_w, src_h)
 
-    image_bytes = read_image_bytes(src)
     final_prompt = build_edit_prompt(prompt)
 
     start = time.monotonic()
@@ -202,11 +190,11 @@ async def edit_game_asset(
         mask_bytes=mask_bytes,
     )
     elapsed = time.monotonic() - start
-    logger.info("edit_game_asset '%s': completed in %.1fs", input_path, elapsed)
+    logger.info("edit_game_asset: completed in %.1fs", elapsed)
 
-    # Output goes in the same directory as the input file
-    out_dir = src.parent
-    out_name = output_name or f"{src.stem}_edited"
+    # Save to disk internally
+    out_dir = get_output_dir(settings.asset_output_dir, AssetType.SPRITE)
+    out_name = output_name or "edited_asset"
     filepath = resolve_filepath(out_dir, out_name)
     save_asset(b64_result, filepath)
 
@@ -214,26 +202,20 @@ async def edit_game_asset(
         name=out_name,
         tool="edit_game_asset",
         model=settings.openai_image_model,
-        asset_type="",  # derived from input context
+        asset_type="",
         prompt=prompt,
         final_prompt=final_prompt,
         background=background.value,
         quality=quality.value,
         size=size.value,
-        source_image=str(src),
-        mask_image=mask_path,
         created_at=datetime.now(timezone.utc),
     )
-    meta_path = save_metadata(meta, filepath)
+    save_metadata(meta, filepath)
 
     text_payload = json.dumps({
         "ok": True,
         "tool": "edit_game_asset",
-        "input_path": str(src),
-        "files": [{
-            "image_path": str(filepath),
-            "metadata_path": str(meta_path),
-        }],
+        "name": out_name,
     })
 
     content: list[TextContent | ImageContent] = [
@@ -313,7 +295,6 @@ async def generate_asset_variants(
 
     elapsed = time.monotonic() - start
 
-    files_info: list[dict[str, str]] = []
     image_blocks: list[ImageContent] = []
     warnings: list[str] = []
     completed = 0
@@ -344,12 +325,7 @@ async def generate_asset_variants(
             created_at=datetime.now(timezone.utc),
             tags=tags,
         )
-        meta_path = save_metadata(meta, filepath)
-
-        files_info.append({
-            "image_path": str(filepath),
-            "metadata_path": str(meta_path),
-        })
+        save_metadata(meta, filepath)
         image_blocks.append(ImageContent(type="image", data=b64, mimeType="image/png"))
         completed += 1
 
@@ -371,7 +347,6 @@ async def generate_asset_variants(
         "asset_type": asset_type.value,
         "requested_variants": variant_count,
         "completed_variants": completed,
-        "files": files_info,
     }
     if warnings:
         text_data["warnings"] = warnings

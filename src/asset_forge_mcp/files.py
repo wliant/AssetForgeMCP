@@ -176,3 +176,52 @@ def validate_mask(mask_path: Path, source_width: int, source_height: int) -> Non
 def read_image_bytes(path: Path) -> bytes:
     """Read an image file as raw bytes."""
     return path.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# In-memory image validation (for base64 inputs)
+# ---------------------------------------------------------------------------
+
+def validate_image_bytes(data: bytes) -> tuple[int, int]:
+    """Validate raw image bytes are a valid PNG/JPEG. Returns (width, height)."""
+    try:
+        with Image.open(BytesIO(data)) as img:
+            fmt = img.format
+            if fmt not in ("PNG", "JPEG"):
+                raise AssetError(
+                    ErrorCode.INVALID_IMAGE,
+                    f"Unsupported image format '{fmt}'. Must be PNG or JPEG.",
+                )
+            w, h = img.size
+    except AssetError:
+        raise
+    except Exception as exc:
+        raise AssetError(ErrorCode.INVALID_IMAGE, f"Cannot open image: {exc}") from exc
+
+    if w > _MAX_DIMENSION or h > _MAX_DIMENSION:
+        raise AssetError(
+            ErrorCode.INVALID_IMAGE,
+            f"Image dimensions {w}x{h} exceed maximum {_MAX_DIMENSION}x{_MAX_DIMENSION}.",
+        )
+    return w, h
+
+
+def validate_mask_bytes(data: bytes, source_width: int, source_height: int) -> None:
+    """Validate raw mask bytes: must be PNG with alpha, matching source dimensions."""
+    try:
+        with Image.open(BytesIO(data)) as img:
+            if img.format != "PNG":
+                raise AssetError(ErrorCode.INVALID_IMAGE, "Mask must be a PNG file.")
+            if img.mode not in ("RGBA", "LA"):
+                raise AssetError(ErrorCode.INVALID_IMAGE, "Mask PNG must have an alpha channel (RGBA).")
+            mw, mh = img.size
+    except AssetError:
+        raise
+    except Exception as exc:
+        raise AssetError(ErrorCode.INVALID_IMAGE, f"Cannot open mask: {exc}") from exc
+
+    if mw != source_width or mh != source_height:
+        raise AssetError(
+            ErrorCode.MASK_MISMATCH,
+            f"Mask dimensions {mw}x{mh} do not match source image {source_width}x{source_height}.",
+        )

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.types import ImageContent, TextContent
@@ -19,7 +17,7 @@ from asset_forge_mcp.tools import (
     set_client,
 )
 
-from .conftest import make_png_b64, save_test_png
+from .conftest import make_png_b64
 
 
 @pytest.fixture(autouse=True)
@@ -45,16 +43,7 @@ class TestGenerateGameAsset:
         assert meta["ok"] is True
         assert meta["tool"] == "generate_game_asset"
         assert meta["name"] == "slime"
-        assert len(meta["files"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_saves_to_disk(self, settings):
-        result = await generate_game_asset(name="slime", prompt="a cute slime")
-        meta = json.loads(result[0].text)
-        img_path = Path(meta["files"][0]["image_path"])
-        meta_path = Path(meta["files"][0]["metadata_path"])
-        assert img_path.exists()
-        assert meta_path.exists()
+        assert "files" not in meta
 
     @pytest.mark.asyncio
     async def test_multiple_images(self, settings, mock_openai_client):
@@ -65,23 +54,26 @@ class TestGenerateGameAsset:
         assert isinstance(result[1], ImageContent)
         assert isinstance(result[2], ImageContent)
 
+        meta = json.loads(result[0].text)
+        assert "files" not in meta
+
     @pytest.mark.asyncio
-    async def test_correct_output_dir(self, settings):
+    async def test_response_has_no_paths(self, settings):
         result = await generate_game_asset(
             name="slime", prompt="a slime", asset_type=AssetType.ICON,
         )
         meta = json.loads(result[0].text)
-        assert "icons" in meta["files"][0]["image_path"]
+        assert "files" not in meta
+        assert "image_path" not in json.dumps(meta)
+        assert "metadata_path" not in json.dumps(meta)
 
 
 class TestEditGameAsset:
     @pytest.mark.asyncio
-    async def test_returns_text_and_image(self, settings, tmp_output_dir):
-        src = tmp_output_dir / "source.png"
-        save_test_png(src)
-
+    async def test_returns_text_and_image(self, settings):
+        b64_input = make_png_b64()
         result = await edit_game_asset(
-            input_path=str(src),
+            input_image=b64_input,
             prompt="make it blue",
         )
         assert len(result) == 2
@@ -91,22 +83,21 @@ class TestEditGameAsset:
         meta = json.loads(result[0].text)
         assert meta["ok"] is True
         assert meta["tool"] == "edit_game_asset"
+        assert "files" not in meta
+        assert "input_path" not in meta
 
     @pytest.mark.asyncio
-    async def test_output_in_same_dir_as_input(self, settings, tmp_output_dir):
-        src = tmp_output_dir / "source.png"
-        save_test_png(src)
-
-        result = await edit_game_asset(input_path=str(src), prompt="edit it")
-        meta = json.loads(result[0].text)
-        out_path = Path(meta["files"][0]["image_path"])
-        assert out_path.parent == src.parent
+    async def test_response_has_no_paths(self, settings):
+        b64_input = make_png_b64()
+        result = await edit_game_asset(input_image=b64_input, prompt="edit it")
+        text = result[0].text
+        assert "path" not in text.lower()
 
     @pytest.mark.asyncio
-    async def test_missing_input_raises(self, settings):
+    async def test_invalid_base64_raises(self, settings):
         from asset_forge_mcp.models import AssetError
-        with pytest.raises(AssetError):
-            await edit_game_asset(input_path="/nonexistent.png", prompt="edit")
+        with pytest.raises((AssetError, Exception)):
+            await edit_game_asset(input_image="not-valid-base64!!", prompt="edit")
 
 
 class TestGenerateAssetVariants:
@@ -122,7 +113,7 @@ class TestGenerateAssetVariants:
         assert len(result) == 4
         meta = json.loads(result[0].text)
         assert meta["completed_variants"] == 3
-        assert len(meta["files"]) == 3
+        assert "files" not in meta
 
     @pytest.mark.asyncio
     async def test_partial_failure(self, settings, mock_openai_client):
@@ -140,14 +131,14 @@ class TestGenerateAssetVariants:
         assert meta["completed_variants"] == 1
         assert meta["requested_variants"] == 2
         assert len(meta["warnings"]) == 1
+        assert "files" not in meta
 
     @pytest.mark.asyncio
-    async def test_variant_naming(self, settings, mock_openai_client):
+    async def test_response_has_no_paths(self, settings, mock_openai_client):
         mock_openai_client.generate_image.return_value = [make_png_b64(), make_png_b64()]
         result = await generate_asset_variants(
             name="icon", prompt="an icon", variant_count=2,
         )
         meta = json.loads(result[0].text)
-        paths = [f["image_path"] for f in meta["files"]]
-        assert any("icon_1" in p for p in paths)
-        assert any("icon_2" in p for p in paths)
+        assert "files" not in meta
+        assert "path" not in json.dumps(meta).lower()

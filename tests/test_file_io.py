@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from asset_forge_mcp.files import save_asset, save_metadata, validate_input_image, validate_mask
+from asset_forge_mcp.files import (
+    save_asset, save_metadata, validate_input_image, validate_mask,
+    validate_image_bytes, validate_mask_bytes,
+)
 from asset_forge_mcp.models import AssetError, AssetMetadata, ErrorCode
 
-from .conftest import make_png_b64, save_test_png
+from .conftest import make_png_b64, make_png_bytes, save_test_png
 
 
 class TestSaveAsset:
@@ -98,3 +101,40 @@ class TestValidateMask:
         with pytest.raises(AssetError) as exc_info:
             validate_mask(tmp_path / "nope.png", 32, 32)
         assert exc_info.value.code == ErrorCode.FILE_NOT_FOUND
+
+
+class TestValidateImageBytes:
+    def test_valid_png(self):
+        data = make_png_bytes(32, 32)
+        w, h = validate_image_bytes(data)
+        assert w == 32
+        assert h == 32
+
+    def test_invalid_data(self):
+        with pytest.raises(AssetError) as exc_info:
+            validate_image_bytes(b"not an image")
+        assert exc_info.value.code == ErrorCode.INVALID_IMAGE
+
+    def test_oversized(self):
+        data = make_png_bytes(5000, 5000)
+        with pytest.raises(AssetError) as exc_info:
+            validate_image_bytes(data)
+        assert exc_info.value.code == ErrorCode.INVALID_IMAGE
+
+
+class TestValidateMaskBytes:
+    def test_valid_mask(self):
+        data = make_png_bytes(32, 32, mode="RGBA")
+        validate_mask_bytes(data, 32, 32)  # should not raise
+
+    def test_dimension_mismatch(self):
+        data = make_png_bytes(64, 64, mode="RGBA")
+        with pytest.raises(AssetError) as exc_info:
+            validate_mask_bytes(data, 32, 32)
+        assert exc_info.value.code == ErrorCode.MASK_MISMATCH
+
+    def test_no_alpha(self):
+        data = make_png_bytes(32, 32, mode="RGB")
+        with pytest.raises(AssetError) as exc_info:
+            validate_mask_bytes(data, 32, 32)
+        assert exc_info.value.code == ErrorCode.INVALID_IMAGE
