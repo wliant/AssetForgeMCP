@@ -8,21 +8,20 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from mcp.types import ImageContent, TextContent
+from mcp.types import TextContent
 
 from .config import get_settings
 from .files import (
-    get_output_dir,
-    resolve_filepath,
-    save_asset,
-    save_metadata,
+    resolve_s3_key,
+    upload_asset,
+    upload_metadata,
     validate_image_bytes,
     validate_mask_bytes,
 )
 from .models import (
+    ASSET_TYPE_FOLDERS,
     AssetError,
     AssetMetadata,
     AssetType,
@@ -34,14 +33,16 @@ from .models import (
 )
 from .openai_client import OpenAIImageClient
 from .prompts import build_edit_prompt, build_generation_prompt
+from .s3_client import S3Storage
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level client singleton (set by server lifespan)
+# Module-level singletons (set by server lifespan)
 # ---------------------------------------------------------------------------
 
 _client: OpenAIImageClient | None = None
+_storage: S3Storage | None = None
 
 
 def set_client(client: OpenAIImageClient) -> None:
@@ -55,23 +56,20 @@ def get_client() -> OpenAIImageClient:
     return _client
 
 
+def set_storage(storage: S3Storage | None) -> None:
+    global _storage
+    _storage = storage
+
+
+def get_storage() -> S3Storage:
+    if _storage is None:
+        raise AssetError(ErrorCode.S3_ERROR, "S3 storage not initialised.")
+    return _storage
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _payload_size_bytes(content: list) -> int:
-    """Estimate response payload size for logging."""
-    total = 0
-    for block in content:
-        if isinstance(block, ImageContent):
-            total += len(block.data) if block.data else 0
-        elif isinstance(block, TextContent):
-            total += len(block.text) if block.text else 0
-    return total
-
-
-_10MB = 10 * 1024 * 1024
-
 
 # ---------------------------------------------------------------------------
 # Tool 1: generate_game_asset
@@ -87,17 +85,18 @@ async def generate_game_asset(
     quality: ImageQuality = ImageQuality.AUTO,
     n: int = 1,
     tags: list[str] | None = None,
-) -> list[TextContent | ImageContent]:
+) -> list[TextContent]:
     """Generate a new game image asset."""
     if n < 1 or n > 8:
         raise AssetError(ErrorCode.INVALID_INPUT, "n must be between 1 and 8.")
 
     settings = get_settings()
     client = get_client()
+    storage = get_storage()
     tags = tags or []
 
     final_prompt = build_generation_prompt(prompt, asset_type, style, background)
-    out_dir = get_output_dir(settings.asset_output_dir, asset_type)
+    folder = ASSET_TYPE_FOLDERS[asset_type]
 
     start = time.monotonic()
     b64_images = await client.generate_image(
@@ -111,12 +110,13 @@ async def generate_game_asset(
     elapsed = time.monotonic() - start
     logger.info("generate_game_asset '%s': %d image(s) in %.1fs", name, len(b64_images), elapsed)
 
-    image_blocks: list[ImageContent] = []
+    stored_keys: list[str] = []
 
     for idx, b64 in enumerate(b64_images):
         img_name = name if n == 1 else f"{name}_{idx + 1}"
-        filepath = resolve_filepath(out_dir, img_name)
-        save_asset(b64, filepath)
+        key = await resolve_s3_key(storage, folder, img_name)
+        await upload_asset(storage, b64, key)
+        stored_keys.append(key)
 
         meta = AssetMetadata(
             name=img_name,
@@ -132,24 +132,18 @@ async def generate_game_asset(
             created_at=datetime.now(timezone.utc),
             tags=tags,
         )
-        save_metadata(meta, filepath)
-        image_blocks.append(ImageContent(type="image", data=b64, mimeType="image/png"))
+        await upload_metadata(storage, meta, key)
 
     text_payload = json.dumps({
         "ok": True,
         "tool": "generate_game_asset",
         "name": name,
         "asset_type": asset_type.value,
+        "bucket": storage.bucket,
+        "keys": stored_keys,
     })
 
-    content: list[TextContent | ImageContent] = [TextContent(type="text", text=text_payload)]
-    content.extend(image_blocks)
-
-    payload_bytes = _payload_size_bytes(content)
-    if payload_bytes > _10MB:
-        logger.warning("Response payload ~%d bytes exceeds 10 MB.", payload_bytes)
-
-    return content
+    return [TextContent(type="text", text=text_payload)]
 
 
 # ---------------------------------------------------------------------------
@@ -164,10 +158,11 @@ async def edit_game_asset(
     background: BackgroundType = BackgroundType.AUTO,
     quality: ImageQuality = ImageQuality.AUTO,
     size: ImageSize = ImageSize.S_1024x1024,
-) -> list[TextContent | ImageContent]:
+) -> list[TextContent]:
     """Edit an existing image asset."""
     settings = get_settings()
     client = get_client()
+    storage = get_storage()
 
     image_bytes = base64.b64decode(input_image)
     src_w, src_h = validate_image_bytes(image_bytes)
@@ -192,11 +187,11 @@ async def edit_game_asset(
     elapsed = time.monotonic() - start
     logger.info("edit_game_asset: completed in %.1fs", elapsed)
 
-    # Save to disk internally
-    out_dir = get_output_dir(settings.asset_output_dir, AssetType.SPRITE)
+    # Upload to S3
+    folder = ASSET_TYPE_FOLDERS[AssetType.SPRITE]
     out_name = output_name or "edited_asset"
-    filepath = resolve_filepath(out_dir, out_name)
-    save_asset(b64_result, filepath)
+    key = await resolve_s3_key(storage, folder, out_name)
+    await upload_asset(storage, b64_result, key)
 
     meta = AssetMetadata(
         name=out_name,
@@ -210,24 +205,17 @@ async def edit_game_asset(
         size=size.value,
         created_at=datetime.now(timezone.utc),
     )
-    save_metadata(meta, filepath)
+    await upload_metadata(storage, meta, key)
 
     text_payload = json.dumps({
         "ok": True,
         "tool": "edit_game_asset",
         "name": out_name,
+        "bucket": storage.bucket,
+        "key": key,
     })
 
-    content: list[TextContent | ImageContent] = [
-        TextContent(type="text", text=text_payload),
-        ImageContent(type="image", data=b64_result, mimeType="image/png"),
-    ]
-
-    payload_bytes = _payload_size_bytes(content)
-    if payload_bytes > _10MB:
-        logger.warning("Response payload ~%d bytes exceeds 10 MB.", payload_bytes)
-
-    return content
+    return [TextContent(type="text", text=text_payload)]
 
 
 # ---------------------------------------------------------------------------
@@ -244,17 +232,18 @@ async def generate_asset_variants(
     quality: ImageQuality = ImageQuality.AUTO,
     variant_count: int = 4,
     tags: list[str] | None = None,
-) -> list[TextContent | ImageContent]:
+) -> list[TextContent]:
     """Generate multiple variants of a game asset."""
     if variant_count < 1 or variant_count > 8:
         raise AssetError(ErrorCode.INVALID_INPUT, "variant_count must be between 1 and 8.")
 
     settings = get_settings()
     client = get_client()
+    storage = get_storage()
     tags = tags or []
 
     final_prompt = build_generation_prompt(prompt, asset_type, style, background)
-    out_dir = get_output_dir(settings.asset_output_dir, asset_type)
+    folder = ASSET_TYPE_FOLDERS[asset_type]
 
     # Try batch first; fall back to sequential calls if the API limits n
     start = time.monotonic()
@@ -295,7 +284,7 @@ async def generate_asset_variants(
 
     elapsed = time.monotonic() - start
 
-    image_blocks: list[ImageContent] = []
+    stored_keys: list[str] = []
     warnings: list[str] = []
     completed = 0
 
@@ -308,8 +297,9 @@ async def generate_asset_variants(
 
         assert b64 is not None
         img_name = f"{name}_{variant_num}"
-        filepath = resolve_filepath(out_dir, img_name)
-        save_asset(b64, filepath)
+        key = await resolve_s3_key(storage, folder, img_name)
+        await upload_asset(storage, b64, key)
+        stored_keys.append(key)
 
         meta = AssetMetadata(
             name=img_name,
@@ -325,8 +315,7 @@ async def generate_asset_variants(
             created_at=datetime.now(timezone.utc),
             tags=tags,
         )
-        save_metadata(meta, filepath)
-        image_blocks.append(ImageContent(type="image", data=b64, mimeType="image/png"))
+        await upload_metadata(storage, meta, key)
         completed += 1
 
     logger.info(
@@ -347,15 +336,10 @@ async def generate_asset_variants(
         "asset_type": asset_type.value,
         "requested_variants": variant_count,
         "completed_variants": completed,
+        "bucket": storage.bucket,
+        "keys": stored_keys,
     }
     if warnings:
         text_data["warnings"] = warnings
 
-    content: list[TextContent | ImageContent] = [TextContent(type="text", text=json.dumps(text_data))]
-    content.extend(image_blocks)
-
-    payload_bytes = _payload_size_bytes(content)
-    if payload_bytes > _10MB:
-        logger.warning("Response payload ~%d bytes exceeds 10 MB.", payload_bytes)
-
-    return content
+    return [TextContent(type="text", text=json.dumps(text_data))]

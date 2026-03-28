@@ -6,7 +6,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from mcp.types import ImageContent, TextContent
+from mcp.types import TextContent
 
 from asset_forge_mcp.models import AssetType
 from asset_forge_mcp.openai_client import OpenAIImageClient
@@ -33,68 +33,68 @@ def mock_openai_client():
 
 class TestGenerateGameAsset:
     @pytest.mark.asyncio
-    async def test_returns_text_and_image(self, settings):
+    async def test_returns_text_only(self, settings, mock_storage):
         result = await generate_game_asset(name="slime", prompt="a cute slime")
-        assert len(result) == 2
+        assert len(result) == 1
         assert isinstance(result[0], TextContent)
-        assert isinstance(result[1], ImageContent)
 
         meta = json.loads(result[0].text)
         assert meta["ok"] is True
         assert meta["tool"] == "generate_game_asset"
         assert meta["name"] == "slime"
-        assert "files" not in meta
+        assert meta["bucket"] == "test-bucket"
+        assert meta["keys"] == ["sprites/slime.png"]
 
     @pytest.mark.asyncio
-    async def test_multiple_images(self, settings, mock_openai_client):
+    async def test_multiple_images(self, settings, mock_storage, mock_openai_client):
         mock_openai_client.generate_image.return_value = [make_png_b64(), make_png_b64()]
         result = await generate_game_asset(name="slime", prompt="a slime", n=2)
-        # 1 text + 2 images
-        assert len(result) == 3
-        assert isinstance(result[1], ImageContent)
-        assert isinstance(result[2], ImageContent)
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
 
         meta = json.loads(result[0].text)
-        assert "files" not in meta
+        assert meta["bucket"] == "test-bucket"
+        assert len(meta["keys"]) == 2
 
     @pytest.mark.asyncio
-    async def test_response_has_no_paths(self, settings):
+    async def test_response_has_bucket_and_keys(self, settings, mock_storage):
         result = await generate_game_asset(
             name="slime", prompt="a slime", asset_type=AssetType.ICON,
         )
         meta = json.loads(result[0].text)
-        assert "files" not in meta
-        assert "image_path" not in json.dumps(meta)
-        assert "metadata_path" not in json.dumps(meta)
+        assert "bucket" in meta
+        assert "keys" in meta
+        assert meta["keys"][0].startswith("icons/")
 
 
 class TestEditGameAsset:
     @pytest.mark.asyncio
-    async def test_returns_text_and_image(self, settings):
+    async def test_returns_text_only(self, settings, mock_storage):
         b64_input = make_png_b64()
         result = await edit_game_asset(
             input_image=b64_input,
             prompt="make it blue",
         )
-        assert len(result) == 2
+        assert len(result) == 1
         assert isinstance(result[0], TextContent)
-        assert isinstance(result[1], ImageContent)
 
         meta = json.loads(result[0].text)
         assert meta["ok"] is True
         assert meta["tool"] == "edit_game_asset"
-        assert "files" not in meta
-        assert "input_path" not in meta
+        assert meta["bucket"] == "test-bucket"
+        assert "key" in meta
 
     @pytest.mark.asyncio
-    async def test_response_has_no_paths(self, settings):
+    async def test_response_has_bucket_and_key(self, settings, mock_storage):
         b64_input = make_png_b64()
         result = await edit_game_asset(input_image=b64_input, prompt="edit it")
-        text = result[0].text
-        assert "path" not in text.lower()
+        meta = json.loads(result[0].text)
+        assert "bucket" in meta
+        assert "key" in meta
+        assert meta["key"].startswith("sprites/")
 
     @pytest.mark.asyncio
-    async def test_invalid_base64_raises(self, settings):
+    async def test_invalid_base64_raises(self, settings, mock_storage):
         from asset_forge_mcp.models import AssetError
         with pytest.raises((AssetError, Exception)):
             await edit_game_asset(input_image="not-valid-base64!!", prompt="edit")
@@ -102,21 +102,23 @@ class TestEditGameAsset:
 
 class TestGenerateAssetVariants:
     @pytest.mark.asyncio
-    async def test_returns_multiple_images(self, settings, mock_openai_client):
+    async def test_returns_text_only(self, settings, mock_storage, mock_openai_client):
         mock_openai_client.generate_image.return_value = [
             make_png_b64(), make_png_b64(), make_png_b64(),
         ]
         result = await generate_asset_variants(
             name="poison", prompt="poison icon", variant_count=3,
         )
-        # 1 text + 3 images
-        assert len(result) == 4
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+
         meta = json.loads(result[0].text)
         assert meta["completed_variants"] == 3
-        assert "files" not in meta
+        assert meta["bucket"] == "test-bucket"
+        assert len(meta["keys"]) == 3
 
     @pytest.mark.asyncio
-    async def test_partial_failure(self, settings, mock_openai_client):
+    async def test_partial_failure(self, settings, mock_storage, mock_openai_client):
         from asset_forge_mcp.models import AssetError, ErrorCode
         # Batch fails, falls back to sequential; 1 of 2 sequential calls fails
         mock_openai_client.generate_image.side_effect = [
@@ -131,14 +133,15 @@ class TestGenerateAssetVariants:
         assert meta["completed_variants"] == 1
         assert meta["requested_variants"] == 2
         assert len(meta["warnings"]) == 1
-        assert "files" not in meta
+        assert meta["bucket"] == "test-bucket"
+        assert len(meta["keys"]) == 1
 
     @pytest.mark.asyncio
-    async def test_response_has_no_paths(self, settings, mock_openai_client):
+    async def test_response_has_bucket_and_keys(self, settings, mock_storage, mock_openai_client):
         mock_openai_client.generate_image.return_value = [make_png_b64(), make_png_b64()]
         result = await generate_asset_variants(
             name="icon", prompt="an icon", variant_count=2,
         )
         meta = json.loads(result[0].text)
-        assert "files" not in meta
-        assert "path" not in json.dumps(meta).lower()
+        assert "bucket" in meta
+        assert "keys" in meta
