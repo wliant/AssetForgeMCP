@@ -1,13 +1,15 @@
-"""Tests for file I/O: save, validate, mask checks."""
+"""Tests for file I/O: S3 upload helpers, validate, mask checks."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from asset_forge_mcp.files import (
-    save_asset, save_metadata, validate_input_image, validate_mask,
+    resolve_s3_key, upload_asset, upload_metadata,
+    validate_input_image, validate_mask,
     validate_image_bytes, validate_mask_bytes,
 )
 from asset_forge_mcp.models import AssetError, AssetMetadata, ErrorCode
@@ -15,16 +17,60 @@ from asset_forge_mcp.models import AssetError, AssetMetadata, ErrorCode
 from .conftest import make_png_b64, make_png_bytes, save_test_png
 
 
-class TestSaveAsset:
-    def test_writes_png(self, tmp_path: Path):
-        b64 = make_png_b64()
-        filepath = tmp_path / "test.png"
-        save_asset(b64, filepath)
-        assert filepath.exists()
-        assert filepath.stat().st_size > 0
+def _make_mock_storage(existing_keys: set[str] | None = None):
+    """Create a mock S3Storage that knows about existing keys."""
+    from asset_forge_mcp.s3_client import S3Storage
+    mock = AsyncMock(spec=S3Storage)
+    mock.bucket = "test-bucket"
+    existing = existing_keys or set()
+    mock.key_exists = AsyncMock(side_effect=lambda k: k in existing)
+    mock.upload_bytes = AsyncMock()
+    mock.upload_json = AsyncMock()
+    return mock
 
-    def test_save_metadata_writes_json(self, tmp_path: Path):
+
+class TestResolveS3Key:
+    @pytest.mark.asyncio
+    async def test_no_collision(self):
+        storage = _make_mock_storage()
+        key = await resolve_s3_key(storage, "sprites", "test_image")
+        assert key == "sprites/test_image.png"
+
+    @pytest.mark.asyncio
+    async def test_collision_increments(self):
+        storage = _make_mock_storage({"sprites/test_image.png"})
+        key = await resolve_s3_key(storage, "sprites", "test_image")
+        assert key == "sprites/test_image_v2.png"
+
+    @pytest.mark.asyncio
+    async def test_multiple_collisions(self):
+        storage = _make_mock_storage({
+            "sprites/test_image.png",
+            "sprites/test_image_v2.png",
+        })
+        key = await resolve_s3_key(storage, "sprites", "test_image")
+        assert key == "sprites/test_image_v3.png"
+
+
+class TestUploadAsset:
+    @pytest.mark.asyncio
+    async def test_uploads_decoded_png(self):
+        storage = _make_mock_storage()
+        b64 = make_png_b64()
+        await upload_asset(storage, b64, "sprites/test.png")
+        storage.upload_bytes.assert_called_once()
+        args, kwargs = storage.upload_bytes.call_args
+        # upload_bytes(raw, key, content_type="image/png")
+        assert args[1] == "sprites/test.png"
+        assert kwargs.get("content_type") == "image/png"
+        assert len(args[0]) > 0  # decoded bytes
+
+
+class TestUploadMetadata:
+    @pytest.mark.asyncio
+    async def test_uploads_json_sidecar(self):
         from datetime import datetime, timezone
+        storage = _make_mock_storage()
         meta = AssetMetadata(
             name="test",
             tool="generate_game_asset",
@@ -38,15 +84,9 @@ class TestSaveAsset:
             created_at=datetime.now(timezone.utc),
             tags=["test"],
         )
-        img_path = tmp_path / "test.png"
-        img_path.touch()
-        meta_path = save_metadata(meta, img_path)
-        assert meta_path.exists()
-        assert meta_path.suffix == ".json"
-        import json
-        data = json.loads(meta_path.read_text())
-        assert data["name"] == "test"
-        assert data["tool"] == "generate_game_asset"
+        meta_key = await upload_metadata(storage, meta, "sprites/test.png")
+        assert meta_key == "sprites/test.json"
+        storage.upload_json.assert_called_once()
 
 
 class TestValidateInputImage:

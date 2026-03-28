@@ -1,17 +1,16 @@
-"""File I/O: sanitization, save, validate, path traversal protection."""
+"""File I/O: sanitization, S3 upload, validate, image checks."""
 
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 from io import BytesIO
-from pathlib import Path
 
 from PIL import Image
 
 from .models import ASSET_TYPE_FOLDERS, AssetError, AssetMetadata, AssetType, ErrorCode
+from .s3_client import S3Storage
 
 logger = logging.getLogger(__name__)
 
@@ -38,76 +37,46 @@ def sanitize_filename(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Directory helpers
+# S3 key helpers
 # ---------------------------------------------------------------------------
 
-def get_output_dir(base_dir: Path, asset_type: AssetType) -> Path:
-    """Return and create the output directory for an asset type."""
-    folder = ASSET_TYPE_FOLDERS[asset_type]
-    out = base_dir / folder
-    try:
-        out.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise AssetError(ErrorCode.OUTPUT_DIR_ERROR, f"Cannot create output directory {out}: {exc}") from exc
-    return out
-
-
-def _assert_inside(filepath: Path, allowed_root: Path) -> None:
-    """Raise if *filepath* escapes *allowed_root* (path traversal guard)."""
-    try:
-        filepath.resolve().relative_to(allowed_root.resolve())
-    except ValueError:
-        raise AssetError(
-            ErrorCode.INVALID_INPUT,
-            f"Path '{filepath}' resolves outside allowed directory '{allowed_root}'.",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Overwrite-safe filepath resolution
-# ---------------------------------------------------------------------------
-
-def resolve_filepath(directory: Path, name: str, ext: str = ".png") -> Path:
-    """Return a non-colliding filepath inside *directory*.
-
-    If ``name.ext`` exists, tries ``name_v2.ext``, ``name_v3.ext``, etc.
-    """
+def build_s3_key(folder: str, name: str, ext: str = ".png") -> str:
+    """Build an S3 key like 'sprites/forest_slime.png'."""
     safe = sanitize_filename(name)
-    _assert_inside(directory / f"{safe}{ext}", directory)
+    return f"{folder}/{safe}{ext}"
 
-    candidate = directory / f"{safe}{ext}"
-    if not candidate.exists():
+
+async def resolve_s3_key(
+    storage: S3Storage, folder: str, name: str, ext: str = ".png"
+) -> str:
+    """Return a non-colliding S3 key. Checks head_object for existence."""
+    safe = sanitize_filename(name)
+    candidate = f"{folder}/{safe}{ext}"
+    if not await storage.key_exists(candidate):
         return candidate
 
     for i in range(2, 100):
-        candidate = directory / f"{safe}_v{i}{ext}"
-        if not candidate.exists():
-            logger.warning("File collision: renamed to %s", candidate.name)
+        candidate = f"{folder}/{safe}_v{i}{ext}"
+        if not await storage.key_exists(candidate):
+            logger.warning("Key collision: renamed to %s", candidate)
             return candidate
 
-    raise AssetError(ErrorCode.OUTPUT_DIR_ERROR, f"Too many collisions for name '{safe}' in {directory}.")
+    raise AssetError(ErrorCode.OUTPUT_DIR_ERROR, f"Too many collisions for name '{safe}' in {folder}/.")
 
 
-# ---------------------------------------------------------------------------
-# Save helpers
-# ---------------------------------------------------------------------------
-
-def save_asset(b64_data: str, filepath: Path) -> None:
-    """Decode base64 PNG data and write to *filepath*."""
+async def upload_asset(storage: S3Storage, b64_data: str, key: str) -> None:
+    """Decode base64 PNG data and upload to S3."""
     raw = base64.b64decode(b64_data)
-    filepath.write_bytes(raw)
-    logger.info("Saved image: %s (%d bytes)", filepath, len(raw))
+    await storage.upload_bytes(raw, key, content_type="image/png")
+    logger.info("Uploaded image: s3://%s/%s (%d bytes)", storage.bucket, key, len(raw))
 
 
-def save_metadata(metadata: AssetMetadata, image_path: Path) -> Path:
-    """Write sidecar JSON next to the image file. Returns metadata path."""
-    meta_path = image_path.with_suffix(".json")
-    meta_path.write_text(
-        json.dumps(metadata.model_dump(mode="json"), indent=2, default=str),
-        encoding="utf-8",
-    )
-    logger.info("Saved metadata: %s", meta_path)
-    return meta_path
+async def upload_metadata(storage: S3Storage, metadata: AssetMetadata, image_key: str) -> str:
+    """Upload sidecar JSON to S3 next to the image. Returns metadata key."""
+    meta_key = image_key.rsplit(".", 1)[0] + ".json"
+    await storage.upload_json(metadata.model_dump(mode="json"), meta_key)
+    logger.info("Uploaded metadata: s3://%s/%s", storage.bucket, meta_key)
+    return meta_key
 
 
 # ---------------------------------------------------------------------------
@@ -117,11 +86,13 @@ def save_metadata(metadata: AssetMetadata, image_path: Path) -> Path:
 _MAX_DIMENSION = 4096
 
 
-def validate_input_image(path: Path) -> tuple[int, int]:
+def validate_input_image(path) -> tuple[int, int]:
     """Verify *path* is a valid PNG/JPEG and return (width, height).
 
     Raises AssetError on invalid input.
     """
+    from pathlib import Path
+    path = Path(path)
     if not path.exists():
         raise AssetError(ErrorCode.FILE_NOT_FOUND, f"Input file not found: {path}")
     if not path.is_file():
@@ -149,8 +120,10 @@ def validate_input_image(path: Path) -> tuple[int, int]:
     return w, h
 
 
-def validate_mask(mask_path: Path, source_width: int, source_height: int) -> None:
+def validate_mask(mask_path, source_width: int, source_height: int) -> None:
     """Verify mask is a PNG with alpha channel matching source dimensions."""
+    from pathlib import Path
+    mask_path = Path(mask_path)
     if not mask_path.exists():
         raise AssetError(ErrorCode.FILE_NOT_FOUND, f"Mask file not found: {mask_path}")
 
@@ -173,9 +146,10 @@ def validate_mask(mask_path: Path, source_width: int, source_height: int) -> Non
         )
 
 
-def read_image_bytes(path: Path) -> bytes:
+def read_image_bytes(path) -> bytes:
     """Read an image file as raw bytes."""
-    return path.read_bytes()
+    from pathlib import Path
+    return Path(path).read_bytes()
 
 
 # ---------------------------------------------------------------------------

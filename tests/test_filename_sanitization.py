@@ -1,12 +1,12 @@
-"""Tests for filename sanitization and filepath resolution."""
+"""Tests for filename sanitization and S3 key resolution."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
-from asset_forge_mcp.files import resolve_filepath, sanitize_filename
+from asset_forge_mcp.files import resolve_s3_key, sanitize_filename
 from asset_forge_mcp.models import AssetError
 
 
@@ -39,25 +39,30 @@ class TestSanitizeFilename:
         assert sanitize_filename("_forest_") == "forest"
 
 
-class TestResolveFilepath:
-    def test_no_collision(self, tmp_path: Path):
-        result = resolve_filepath(tmp_path, "test_image")
-        assert result == tmp_path / "test_image.png"
+class TestResolveS3Key:
+    @pytest.mark.asyncio
+    async def test_no_collision(self):
+        from asset_forge_mcp.s3_client import S3Storage
+        mock = AsyncMock(spec=S3Storage)
+        mock.key_exists = AsyncMock(return_value=False)
+        result = await resolve_s3_key(mock, "sprites", "test_image")
+        assert result == "sprites/test_image.png"
 
-    def test_collision_increments(self, tmp_path: Path):
-        (tmp_path / "test_image.png").touch()
-        result = resolve_filepath(tmp_path, "test_image")
-        assert result == tmp_path / "test_image_v2.png"
+    @pytest.mark.asyncio
+    async def test_collision_increments(self):
+        from asset_forge_mcp.s3_client import S3Storage
+        mock = AsyncMock(spec=S3Storage)
+        mock.key_exists = AsyncMock(
+            side_effect=lambda k: k == "sprites/test_image.png"
+        )
+        result = await resolve_s3_key(mock, "sprites", "test_image")
+        assert result == "sprites/test_image_v2.png"
 
-    def test_multiple_collisions(self, tmp_path: Path):
-        (tmp_path / "test_image.png").touch()
-        (tmp_path / "test_image_v2.png").touch()
-        result = resolve_filepath(tmp_path, "test_image")
-        assert result == tmp_path / "test_image_v3.png"
-
-    def test_path_traversal_sanitized_away(self, tmp_path: Path):
-        # Dots and slashes are stripped by sanitize_filename, so traversal
-        # is inherently prevented — the result is a safe flat name.
-        result = resolve_filepath(tmp_path, "../../etc/passwd")
-        assert result.parent == tmp_path
-        assert ".." not in str(result.name)
+    @pytest.mark.asyncio
+    async def test_path_traversal_sanitized_away(self):
+        from asset_forge_mcp.s3_client import S3Storage
+        mock = AsyncMock(spec=S3Storage)
+        mock.key_exists = AsyncMock(return_value=False)
+        result = await resolve_s3_key(mock, "sprites", "../../etc/passwd")
+        assert ".." not in result
+        assert result.startswith("sprites/")

@@ -31,6 +31,10 @@ def test_defaults_applied():
         assert s.mcp_host == "0.0.0.0"
         assert s.mcp_port == 8080
         assert s.log_level == "INFO"
+        assert s.s3_endpoint_url == "http://localhost:9000"
+        assert s.s3_access_key == "minioadmin"
+        assert s.s3_bucket == "asset-forge"
+        assert s.s3_region == "us-east-1"
 
 
 def test_secret_str_hides_key():

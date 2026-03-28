@@ -72,6 +72,7 @@ class ErrorCode(str, Enum):
     OPENAI_TIMEOUT = "OPENAI_TIMEOUT"
     OPENAI_BAD_RESPONSE = "OPENAI_BAD_RESPONSE"
     PARTIAL_FAILURE = "PARTIAL_FAILURE"
+    S3_ERROR = "S3_ERROR"
 
 
 # ---------------------------------------------------------------------------

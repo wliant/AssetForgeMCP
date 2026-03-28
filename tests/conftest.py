@@ -6,7 +6,7 @@ import base64
 import os
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from PIL import Image
@@ -23,23 +23,35 @@ def _clear_settings_cache():
 
 
 @pytest.fixture()
-def tmp_output_dir(tmp_path: Path) -> Path:
-    """Provide a temporary output directory."""
-    d = tmp_path / "assets" / "generated"
-    d.mkdir(parents=True)
-    return d
-
-
-@pytest.fixture()
-def settings(tmp_output_dir: Path) -> Settings:
-    """Settings with a temp output dir and dummy API key."""
+def settings() -> Settings:
+    """Settings with S3 config and dummy API key."""
     with patch.dict(os.environ, {
         "OPENAI_API_KEY": "sk-test-key-12345",
-        "ASSET_OUTPUT_DIR": str(tmp_output_dir),
+        "S3_ENDPOINT_URL": "http://localhost:9000",
+        "S3_ACCESS_KEY": "testing",
+        "S3_SECRET_KEY": "testing",
+        "S3_BUCKET": "test-bucket",
+        "S3_REGION": "us-east-1",
     }, clear=False):
         clear_settings()
         from asset_forge_mcp.config import get_settings
         return get_settings()
+
+
+@pytest.fixture()
+def mock_storage():
+    """Provide a mock S3Storage for all tests that need it."""
+    from asset_forge_mcp.s3_client import S3Storage
+    from asset_forge_mcp.tools import set_storage
+
+    mock = AsyncMock(spec=S3Storage)
+    mock.bucket = "test-bucket"
+    mock.key_exists = AsyncMock(return_value=False)
+    mock.upload_bytes = AsyncMock()
+    mock.upload_json = AsyncMock()
+    set_storage(mock)
+    yield mock
+    set_storage(None)
 
 
 def make_png_b64(width: int = 4, height: int = 4, mode: str = "RGBA") -> str:

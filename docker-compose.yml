@@ -3,14 +3,14 @@ services:
   asset-forge-mcp:
     build: .
     ports:
-      - "9500:9500"
+      - "${MCP_PORT:-9500}:${MCP_PORT:-9500}"
     env_file:
       - .env
     environment:
-      - MCP_PORT=9500
-    volumes:
-      - asset-data:/app/assets/generated
+      - MCP_PORT=${MCP_PORT:-9500}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://localhost:9000}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
+      - S3_BUCKET=${S3_BUCKET:-asset-forge}
+      - S3_REGION=${S3_REGION:-us-east-1}
     restart: unless-stopped
-
-volumes:
-  asset-data:

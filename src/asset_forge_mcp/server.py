@@ -20,11 +20,13 @@ from .models import (
     StyleHint,
 )
 from .openai_client import OpenAIImageClient
+from .s3_client import S3Storage
 from .tools import (
     edit_game_asset as _edit_game_asset,
     generate_asset_variants as _generate_asset_variants,
     generate_game_asset as _generate_game_asset,
     set_client,
+    set_storage,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,13 +38,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_level)
 
-    settings.asset_output_dir.mkdir(parents=True, exist_ok=True)
-
     logger.info("Asset Forge MCP starting")
     logger.info("  Host: %s:%d", settings.mcp_host, settings.mcp_port)
-    logger.info("  Output dir: %s", settings.asset_output_dir.resolve())
     logger.info("  Image model: %s", settings.openai_image_model)
     logger.info("  Base URL: %s", settings.openai_base_url)
+    logger.info("  S3 endpoint: %s", settings.s3_endpoint_url)
+    logger.info("  S3 bucket: %s", settings.s3_bucket)
     logger.info("  Docker: %s", "yes" if os.path.exists("/.dockerenv") else "no")
 
     client = OpenAIImageClient(
@@ -51,9 +52,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     )
     set_client(client)
 
+    storage = S3Storage(
+        endpoint_url=settings.s3_endpoint_url,
+        access_key=settings.s3_access_key,
+        secret_key=settings.s3_secret_key.get_secret_value(),
+        region=settings.s3_region,
+        bucket=settings.s3_bucket,
+    )
+    await storage.ensure_bucket()
+    set_storage(storage)
+
     try:
         yield
     finally:
+        await storage.close()
         await client.close()
         logger.info("Asset Forge MCP stopped")
 
@@ -93,8 +105,7 @@ async def generate_game_asset(
 ) -> list:
     """Generate a new game image asset.
 
-    Returns a text block with JSON metadata and one base64-encoded PNG image
-    content block per generated image.
+    Returns a text block with JSON metadata including the S3 bucket and keys.
 
     Args:
         name: Asset name (used as filename).
@@ -129,8 +140,7 @@ async def edit_game_asset(
 ) -> list:
     """Edit an existing image asset.
 
-    Returns a text block with JSON metadata and one base64-encoded PNG image
-    content block with the edited result.
+    Returns a text block with JSON metadata including the S3 bucket and key.
 
     Args:
         input_image: Base64-encoded source image (PNG or JPEG).
@@ -165,9 +175,8 @@ async def generate_asset_variants(
 ) -> list:
     """Generate multiple variants of a game asset concept.
 
-    Returns a text block with JSON metadata (including completed/requested
-    variant counts and any warnings) and one base64-encoded PNG image content
-    block per successful variant.
+    Returns a text block with JSON metadata including completed/requested
+    variant counts, S3 bucket and keys, and any warnings.
 
     Args:
         name: Base asset name (variants get _1, _2, ... suffixes).
