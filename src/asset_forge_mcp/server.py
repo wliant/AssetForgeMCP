@@ -58,6 +58,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         logger.info("Asset Forge MCP stopped")
 
 
+_startup_settings = get_settings()
+
 mcp = FastMCP(
     "Asset Forge MCP",
     instructions=(
@@ -67,6 +69,8 @@ mcp = FastMCP(
         "and generate_asset_variants for multiple variations."
     ),
     lifespan=lifespan,
+    host=_startup_settings.mcp_host,
+    port=_startup_settings.mcp_port,
 )
 
 
@@ -182,8 +186,7 @@ async def generate_asset_variants(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    settings = get_settings()
-    mcp.run(transport="streamable-http", host=settings.mcp_host, port=settings.mcp_port)
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ class OpenAIImageClient:
             "size": size,
             "quality": quality,
             "background": background,
-            "response_format": "b64_json",
+            "output_format": "png",
         }
         # Remove 'auto' values — let the API use its defaults
         body = {k: v for k, v in body.items() if v != "auto"}
@@ -92,7 +92,7 @@ class OpenAIImageClient:
             "size": size,
             "quality": quality,
             "background": background,
-            "response_format": "b64_json",
+            "output_format": "png",
         }
         # Remove 'auto' values
         form_data = {k: v for k, v in form_data.items() if v != "auto"}
